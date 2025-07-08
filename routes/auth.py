@@ -2,13 +2,19 @@ from flask import Blueprint, request, jsonify
 from extensions import mysql, bcrypt
 import random
 import string
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone # Importar timezone aquí
 from email.mime.text import MIMEText
 from email.header import Header
 import smtplib
 import os
-import re # Importar el módulo de expresiones regulares
+import re
 from dotenv import load_dotenv
+import sys
+import traceback
+
+# Importar PyJWT (la librería 'jwt')
+import jwt
+from MySQLdb.cursors import DictCursor # Importar DictCursor para los resultados de la base de datos
 
 load_dotenv()
 
@@ -17,64 +23,124 @@ auth_bp = Blueprint('auth', __name__)
 MAIL_USER = os.getenv('MAIL_USER')
 MAIL_PASS = os.getenv('MAIL_PASS')
 
-def generar_token():
-    return ''.join(random.choices(string.ascii_letters + string.digits, k=64))
+# --- Configuración JWT ---
+# ¡IMPORTANTE!: En producción, esta clave DEBE ser una cadena muy larga, aleatoria y guardada en una variable de entorno.
+JWT_SECRET_KEY = os.getenv('JWT_SECRET_KEY', 'tu_clave_secreta_jwt_muy_segura_aqui')
+JWT_EXPIRATION_DELTA = timedelta(hours=1) # El token expirará en 1 hora
+
 
 def generar_codigo_verificacion():
+    """Genera un código de verificación numérico de 6 dígitos."""
     return str(random.randint(100000, 999999))
 
 def enviar_correo_verificacion(destinatario, codigo):
-    cuerpo = f"Este es tu código de verificación. No lo compartas con nadie: {codigo}"
-    msg = MIMEText(cuerpo, 'plain', 'utf-8')
-    msg['Subject'] = Header('Código de Verificación', 'utf-8')
-    msg['From'] = MAIL_USER
-    msg['To'] = destinatario
-
-    try:
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-            server.login(MAIL_USER, MAIL_PASS)
-            server.send_message(msg)
-        return True
-    except Exception as e:
-        print("Error al enviar correo:", str(e))
-        return False
-
-# Nueva función para enviar correo de restablecimiento de contraseña
-def enviar_correo_restablecimiento(destinatario, reset_token):
-    reset_link = f"Por favor, usa este token para restablecer tu contraseña: {reset_token}\n" \
-                 "Este token expirará en 1 hora. Si no solicitaste esto, ignora este correo."
+    """
+    Envía un correo electrónico con el código de verificación.
+    Retorna True si el envío es exitoso, False en caso contrario.
+    """
+    html_cuerpo = f"""
+    <html>
+    <head>
+        <style>
+            body {{ font-family: Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 0; }}
+            .container {{ max-width: 600px; margin: 20px auto; background-color: #ffffff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0, 0, 0, 0.1); }}
+            .header {{ background-color: #4CAF50; color: white; padding: 10px 20px; text-align: center; border-radius: 8px 8px 0 0; }}
+            .content {{ padding: 20px; text-align: center; }}
+            .code {{ font-size: 24px; font-weight: bold; color: #333333; margin: 20px 0; padding: 10px; border: 2px dashed #4CAF50; display: inline-block; }}
+            .footer {{ text-align: center; font-size: 12px; color: #777777; margin-top: 20px; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h2>Verificación de Cuenta</h2>
+            </div>
+            <div class="content">
+                <p>Gracias por registrarte en nuestra plataforma. Para verificar tu cuenta, usa el siguiente código:</p>
+                <div class="code">{codigo}</div>
+                <p>Este código es válido por un tiempo limitado.</p>
+                <p>Si no solicitaste esta verificación, por favor ignora este correo.</p>
+            </div>
+            <div class="footer">
+                <p>&copy; {datetime.now().year} TuEmpresa. Todos los derechos reservados.</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
     
-    msg = MIMEText(reset_link, 'plain', 'utf-8')
-    msg['Subject'] = Header('Restablecimiento de Contraseña', 'utf-8')
-    msg['From'] = MAIL_USER
+    msg = MIMEText(html_cuerpo, 'html', 'utf-8')
+    msg['From'] = Header(f"Tu Empresa <{MAIL_USER}>", 'utf-8')
     msg['To'] = destinatario
+    msg['Subject'] = Header("Código de Verificación de Cuenta", 'utf-8')
 
     try:
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-            server.login(MAIL_USER, MAIL_PASS)
-            server.send_message(msg)
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+            smtp.login(MAIL_USER, MAIL_PASS)
+            smtp.send_message(msg)
+        print(f"Correo de verificación enviado a {destinatario}")
         return True
     except Exception as e:
-        print("Error al enviar correo de restablecimiento:", str(e))
+        print(f"Error al enviar correo de verificación a {destinatario}: {e}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
         return False
 
-def enviar_correo_bienvenida(nombre_usuario, destinatario):
-    cuerpo = f"Hola {nombre_usuario}, tu cuenta ha sido verificada exitosamente. ¡Bienvenido a God of Eternia!"
-    msg = MIMEText(cuerpo, 'plain', 'utf-8')
-    msg['Subject'] = Header('¡Bienvenido a God of Eternia!', 'utf-8')
-    msg['From'] = MAIL_USER
+def generar_codigo_restablecimiento():
+    """Genera un código de restablecimiento alfanumérico aleatorio y corto."""
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=8))
+
+def enviar_correo_restablecimiento(destinatario, codigo):
+    """
+    Envía un correo electrónico con el código de restablecimiento de contraseña.
+    Retorna True si el envío es exitoso, False en caso contrario.
+    """
+    html_cuerpo = f"""
+    <html>
+    <head>
+        <style>
+            body {{ font-family: Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 0; }}
+            .container {{ max-width: 600px; margin: 20px auto; background-color: #ffffff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0, 0, 0, 0.1); }}
+            .header {{ background-color: #f0ad4e; color: white; padding: 10px 20px; text-align: center; border-radius: 8px 8px 0 0; }}
+            .content {{ padding: 20px; text-align: center; }}
+            .code {{ font-size: 24px; font-weight: bold; color: #333333; margin: 20px 0; padding: 10px; border: 2px dashed #f0ad4e; display: inline-block; }}
+            .footer {{ text-align: center; font-size: 12px; color: #777777; margin-top: 20px; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h2>Restablecimiento de Contraseña</h2>
+            </div>
+            <div class="content">
+                <p>Has solicitado restablecer tu contraseña. Usa el siguiente código para continuar:</p>
+                <div class="code">{codigo}</div>
+                <p>Este código es válido por 10 minutos.</p>
+                <p>Si no solicitaste esto, por favor ignora este correo.</p>
+            </div>
+            <div class="footer">
+                <p>&copy; {datetime.now().year} TuEmpresa. Todos los derechos reservados.</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+    msg = MIMEText(html_cuerpo, 'html', 'utf-8')
+    msg['From'] = Header(f"Tu Empresa <{MAIL_USER}>", 'utf-8')
     msg['To'] = destinatario
+    msg['Subject'] = Header("Código de Restablecimiento de Contraseña", 'utf-8')
 
     try:
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-            server.login(MAIL_USER, MAIL_PASS)
-            server.send_message(msg)
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+            smtp.login(MAIL_USER, MAIL_PASS)
+            smtp.send_message(msg)
+        print(f"Correo de restablecimiento enviado a {destinatario}")
         return True
     except Exception as e:
-        print("Error al enviar correo de bienvenida:", str(e))
+        print(f"Error al enviar correo de restablecimiento a {destinatario}: {e}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
         return False
 
-# --- NUEVA FUNCIÓN DE VALIDACIÓN DE CONTRASEÑA ---
 def validar_password(password):
     if len(password) < 8:
         return "La contraseña debe tener al menos 8 caracteres."
@@ -84,10 +150,9 @@ def validar_password(password):
         return "La contraseña debe contener al menos una letra minúscula."
     if not re.search(r"[0-9]", password):
         return "La contraseña debe contener al menos un número."
-    if not re.search(r"[!@#$%^&*()_+=\-{}[\]|:;<>,.?/~`]", password):
-        # Esta regex incluye la mayoría de los caracteres especiales comunes. Puedes ajustarla.
+    if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", password):
         return "La contraseña debe contener al menos un carácter especial."
-    return None # Retorna None si la contraseña es válida
+    return None
 
 @auth_bp.route('/register', methods=['POST'])
 def register():
@@ -95,85 +160,116 @@ def register():
     username = data.get('username')
     email = data.get('email')
     password = data.get('password')
-    descripcion = data.get('descripcion', '')
 
     if not all([username, email, password]):
-        return jsonify({"error": "Todos los campos son obligatorios"}), 400
+        return jsonify({"error": "Faltan campos requeridos."}), 400
 
-    # --- APLICAR VALIDACIÓN DE CONTRASEÑA ---
     password_error = validar_password(password)
     if password_error:
         return jsonify({"error": password_error}), 400
 
-    hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
-    codigo = generar_codigo_verificacion()
-    expira = datetime.now() + timedelta(hours=1)
-    expira_str = expira.strftime('%Y-%m-%d %H:%M:%S')
-
-    if not enviar_correo_verificacion(email, codigo):
-        return jsonify({"error": "No se pudo enviar el correo de verificación"}), 500
-
     cursor = mysql.connection.cursor()
     try:
-        token = generar_token() # Este token se guarda sin "Bearer "
-        cursor.execute("""
-            INSERT INTO users (token, username, email, password_hash, DescripUsuario, verificacion_codigo, verificacion_expira, verificado)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, FALSE)
-        """, (token, username, email, hashed_password, descripcion, codigo, expira_str))
+        cursor.execute("SELECT id FROM users WHERE username = %s", (username,))
+        if cursor.fetchone():
+            return jsonify({"error": "El nombre de usuario ya existe."}), 409
+
+        cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
+        if cursor.fetchone():
+            return jsonify({"error": "El correo electrónico ya está registrado."}), 409
+
+        hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
+        verification_code = generar_codigo_verificacion()
+
+        cursor.execute(
+            "INSERT INTO users (username, email, password_hash, verificado, verification_code, code_expiration) VALUES (%s, %s, %s, %s, %s, %s)",
+            (username, email, hashed_password, False, verification_code, datetime.now() + timedelta(minutes=10)) # Código expira en 10 minutos
+        )
         mysql.connection.commit()
+
+        if enviar_correo_verificacion(email, verification_code):
+            return jsonify({"message": "Registro exitoso. Se ha enviado un código de verificación a tu correo."}), 201
+        else:
+            return jsonify({"error": "Error al enviar correo de verificación. Por favor, intenta de nuevo."}), 500
     except Exception as e:
-        # Aquí podrías añadir más lógica para verificar si el error es por 'UNIQUE constraint' (ej. usuario/email ya existe)
-        return jsonify({"error": f"Error al registrar: {str(e)}"}), 500
+        print(f"Error en /register: {str(e)}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        return jsonify({"error": "Error interno del servidor."}), 500
     finally:
         cursor.close()
 
-    return jsonify({"message": "Usuario registrado exitosamente. Revisa tu correo para verificar tu cuenta."}), 201
-
-@auth_bp.route('/verificar', methods=['POST'])
-def verificar():
+@auth_bp.route('/verify', methods=['POST'])
+def verify_account():
     data = request.get_json()
     email = data.get('email')
-    codigo = data.get('codigo')
+    code = data.get('code')
 
-    if not all([email, codigo]):
-        return jsonify({"error": "Email y código son requeridos para la verificación"}), 400
+    if not all([email, code]):
+        return jsonify({"error": "Faltan campos requeridos: email y código."}), 400
 
     cursor = mysql.connection.cursor()
     try:
-        cursor.execute("SELECT verificacion_codigo, verificacion_expira, verificado FROM users WHERE email = %s", (email,))
-        resultado = cursor.fetchone()
-        if not resultado:
-            return jsonify({"error": "Usuario no encontrado"}), 404
+        cursor.execute("SELECT verification_code, code_expiration FROM users WHERE email = %s", (email,))
+        result = cursor.fetchone()
 
-        codigo_correcto, expira, verificado = resultado
+        if not result:
+            return jsonify({"error": "Correo electrónico no encontrado."}), 404
 
-        if verificado:
-            return jsonify({"message": "La cuenta ya está verificada."}), 200
+        stored_code, code_expiration = result
 
-        if expira is None:
-            return jsonify({"error": "Fecha de expiración de la verificación no encontrada. Por favor, contacta al soporte."}), 500
+        if stored_code == code and code_expiration and datetime.now() < code_expiration:
+            cursor.execute("UPDATE users SET verificado = TRUE, verification_code = NULL, code_expiration = NULL WHERE email = %s", (email,))
+            mysql.connection.commit()
+            return jsonify({"message": "Cuenta verificada exitosamente."}), 200
+        else:
+            if code_expiration and datetime.now() >= code_expiration:
+                return jsonify({"error": "El código de verificación ha expirado."}), 400
+            else:
+                return jsonify({"error": "Código de verificación inválido."}), 400
+    except Exception as e:
+        print(f"Error en /verify: {str(e)}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        return jsonify({"error": "Error interno del servidor."}), 500
+    finally:
+        cursor.close()
 
-        if datetime.now() > expira:
-            return jsonify({"error": "El código ha expirado. Solicita un nuevo código de verificación."}), 400
+@auth_bp.route('/resend_verification_code', methods=['POST'])
+def resend_verification_code():
+    data = request.get_json()
+    email = data.get('email')
 
-        if codigo != codigo_correcto:
-            return jsonify({"error": "Código incorrecto"}), 400
+    if not email:
+        return jsonify({"error": "El campo 'email' es requerido."}), 400
 
-        # Actualizar a verificado
-        cursor.execute("""
-            UPDATE users SET verificado = TRUE, verificacion_codigo = NULL, verificacion_expira = NULL
-            WHERE email = %s
-        """, (email,))
+    cursor = mysql.connection.cursor()
+    try:
+        cursor.execute("SELECT verificado FROM users WHERE email = %s", (email,))
+        user_status = cursor.fetchone()
+
+        if not user_status:
+            return jsonify({"error": "Usuario no encontrado."}), 404
+        
+        if user_status[0]:
+            return jsonify({"message": "La cuenta ya está verificada."}), 400
+
+        new_code = generar_codigo_verificacion()
+        new_expiration = datetime.now() + timedelta(minutes=10)
+
+        cursor.execute(
+            "UPDATE users SET verification_code = %s, code_expiration = %s WHERE email = %s",
+            (new_code, new_expiration, email)
+        )
         mysql.connection.commit()
 
-        # Obtener nombre del usuario y enviar correo de bienvenida
-        cursor.execute("SELECT username FROM users WHERE email = %s", (email,))
-        user_info = cursor.fetchone()
-        if user_info:
-            enviar_correo_bienvenida(user_info[0], email)
+        if enviar_correo_verificacion(email, new_code):
+            return jsonify({"message": "Nuevo código de verificación enviado."}), 200
+        else:
+            return jsonify({"error": "Error al reenviar el correo de verificación."}), 500
 
-        return jsonify({"message": "Cuenta verificada exitosamente"}), 200
-
+    except Exception as e:
+        print(f"Error en /resend_verification_code: {str(e)}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        return jsonify({"error": "Error interno del servidor."}), 500
     finally:
         cursor.close()
 
@@ -184,64 +280,37 @@ def login():
     password = data.get('password')
 
     if not all([email, password]):
-        return jsonify({"error": "Correo y contraseña son obligatorios"}), 400
+        return jsonify({"error": "Faltan campos requeridos."}), 400
 
-    cursor = mysql.connection.cursor()
+    # Usar DictCursor para acceder a los resultados por nombre de columna
+    cursor = mysql.connection.cursor(DictCursor) 
     try:
-        cursor.execute("SELECT token, password_hash, verificado FROM users WHERE email = %s", (email,))
+        cursor.execute("SELECT id, username, email, password_hash, verificado FROM users WHERE email = %s", (email,))
         user = cursor.fetchone()
 
-        if not user:
-            return jsonify({"error": "Correo o contraseña incorrectos"}), 401
+        if user and bcrypt.check_password_hash(user['password_hash'], password):
+            if not user['verificado']:
+                return jsonify({"error": "Cuenta no verificada. Por favor, verifica tu correo."}), 403
 
-        token, password_hash, verificado = user
+            # Crear el token JWT con PyJWT
+            payload = {
+                "user_id": user['id'],
+                "username": user['username'],
+                "email": user['email'],
+                "verificado": user['verificado'],
+                "exp": datetime.now(timezone.utc) + JWT_EXPIRATION_DELTA
+            }
+            token = jwt.encode(payload, JWT_SECRET_KEY, algorithm="HS256")
 
-        if not bcrypt.check_password_hash(password_hash, password):
-            return jsonify({"error": "Correo o contraseña incorrectos"}), 401
-
-        if not verificado:
-            return jsonify({"error": "La cuenta no ha sido verificada. Por favor, revisa tu correo."}), 403
-
-        return jsonify({"token": token, "message": "Login exitoso"}), 200
-
-    finally:
-        cursor.close()
-
-@auth_bp.route('/logeado', methods=['GET'])
-def logeado():
-    # Obtiene el encabezado 'Authorization'
-    auth_header = request.headers.get('Authorization')
-
-    if not auth_header:
-        return jsonify({"logeado": 0}), 200 # No se proporcionó encabezado de autorización
-
-    # Verifica si el encabezado comienza con 'Bearer '
-    if "Bearer " in auth_header:
-        token = auth_header.split(" ")[1] # Extrae el token real
-    else:
-        # Si no tiene "Bearer ", asume que es el token directamente (menos seguro/estándar)
-        # O podrías devolver un error 400 si esperas siempre el formato Bearer
-        token = auth_header
-        # return jsonify({"logeado": 0, "error": "Formato de token inválido"}), 400
-
-    cursor = mysql.connection.cursor()
-    try:
-        # Ahora busca el token real en la base de datos
-        cursor.execute("SELECT id FROM users WHERE token = %s AND verificado = TRUE", (token,))
-        user = cursor.fetchone()
-
-        if user:
-            return jsonify({"logeado": 1}), 200
+            return jsonify(access_token=token), 200
         else:
-            return jsonify({"logeado": 0}), 200 # Token no encontrado o usuario no verificado
-
+            return jsonify({"error": "Credenciales inválidas."}), 401
     except Exception as e:
-        print(f"Error en /logeado: {str(e)}")
-        return jsonify({"logeado": 0, "error": "Error interno del servidor"}), 500
+        print(f"Error en /login: {str(e)}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        return jsonify({"error": "Error interno del servidor."}), 500
     finally:
         cursor.close()
-
-# --- Endpoints para Recuperación de Contraseña ---
 
 @auth_bp.route('/forgot_password', methods=['POST'])
 def forgot_password():
@@ -249,84 +318,70 @@ def forgot_password():
     email = data.get('email')
 
     if not email:
-        return jsonify({"error": "El correo electrónico es obligatorio"}), 400
+        return jsonify({"error": "El correo electrónico es requerido."}), 400
 
     cursor = mysql.connection.cursor()
     try:
-        cursor.execute("SELECT username FROM users WHERE email = %s", (email,))
-        user = cursor.fetchone()
+        cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
+        if not cursor.fetchone():
+            return jsonify({"error": "Usuario no encontrado."}), 404
 
-        if not user:
-            # Por seguridad, no reveles si el correo no existe
-            return jsonify({"message": "Si el correo existe, se ha enviado un enlace para restablecer la contraseña."}), 200
+        reset_code = generar_codigo_restablecimiento()
+        reset_token_expira = datetime.now() + timedelta(minutes=10)
 
-        # Generar token de restablecimiento y fecha de expiración
-        reset_token = generar_token()
-        expira = datetime.now() + timedelta(hours=1) # El token expira en 1 hora
-        expira_str = expira.strftime('%Y-%m-%d %H:%M:%S')
-
-        # Guardar el token de restablecimiento y su expiración en la base de datos
-        cursor.execute("""
-            UPDATE users SET reset_token = %s, reset_token_expira = %s
-            WHERE email = %s
-        """, (reset_token, expira_str, email))
+        cursor.execute(
+            "UPDATE users SET reset_token = %s, reset_token_expira = %s WHERE email = %s",
+            (reset_code, reset_token_expira, email)
+        )
         mysql.connection.commit()
 
-        # Enviar el correo con el token de restablecimiento
-        if not enviar_correo_restablecimiento(email, reset_token):
-            return jsonify({"error": "No se pudo enviar el correo de restablecimiento de contraseña"}), 500
-
-        return jsonify({"message": "Si el correo existe, se ha enviado un enlace para restablecer la contraseña."}), 200
-
+        if enviar_correo_restablecimiento(email, reset_code):
+            return jsonify({"message": "Se ha enviado un código de restablecimiento a tu correo."}), 200
+        else:
+            return jsonify({"error": "Error al enviar correo de restablecimiento."}), 500
     except Exception as e:
-        print(f"Error en /forgot_password: {str(e)}")
-        return jsonify({"error": "Error interno del servidor al procesar la solicitud de restablecimiento"}), 500
+        print(f"Error en /forgot_password: {str(e)}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        return jsonify({"error": "Error interno del servidor."}), 500
     finally:
         cursor.close()
 
 @auth_bp.route('/reset_password', methods=['POST'])
 def reset_password():
     data = request.get_json()
-    token = data.get('token')
+    reset_code = data.get('code')
     new_password = data.get('new_password')
 
-    if not all([token, new_password]):
-        return jsonify({"error": "Token y nueva contraseña son obligatorios"}), 400
-
-    # --- APLICAR VALIDACIÓN DE CONTRASEÑA ---
+    if not all([reset_code, new_password]):
+        return jsonify({"error": "Faltan campos requeridos: código de restablecimiento y nueva contraseña."}), 400
+    
     password_error = validar_password(new_password)
     if password_error:
         return jsonify({"error": password_error}), 400
 
     cursor = mysql.connection.cursor()
     try:
-        # Buscar usuario por el token de restablecimiento
-        cursor.execute("SELECT email, reset_token_expira FROM users WHERE reset_token = %s", (token,))
+        cursor.execute("SELECT email, reset_token_expira FROM users WHERE reset_token = %s", (reset_code,))
         user_info = cursor.fetchone()
-
         if not user_info:
-            return jsonify({"error": "Token inválido o no encontrado"}), 400
+            return jsonify({"error": "Código de restablecimiento inválido."}), 400
 
         email, expira = user_info
-
-        # Verificar si el token ha expirado
         if expira is None or datetime.now() > expira:
-            return jsonify({"error": "El token ha expirado. Por favor, solicita uno nuevo."}), 400
+            cursor.execute("UPDATE users SET reset_token = NULL, reset_token_expira = NULL WHERE email = %s", (email,))
+            mysql.connection.commit()
+            return jsonify({"error": "El código de restablecimiento ha expirado."}), 400
 
-        # Hashear la nueva contraseña
         hashed_new_password = bcrypt.generate_password_hash(new_password).decode('utf-8')
-
-        # Actualizar la contraseña y limpiar el token de restablecimiento
         cursor.execute("""
             UPDATE users SET password_hash = %s, reset_token = NULL, reset_token_expira = NULL
             WHERE email = %s
         """, (hashed_new_password, email))
         mysql.connection.commit()
-
-        return jsonify({"message": "Contraseña restablecida exitosamente"}), 200
-
+        return jsonify({"message": "Contraseña restablecida exitosamente."}), 200
     except Exception as e:
-        print(f"Error en /reset_password: {str(e)}")
-        return jsonify({"error": "Error interno del servidor al restablecer la contraseña"}), 500
+        print(f"Error en /reset_password: {str(e)}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        return jsonify({"error": "Error interno del servidor."}), 500
     finally:
         cursor.close()

@@ -1,39 +1,62 @@
 version: '3.8'
 
 services:
+  # Servicio para Redis
+  redis:
+    image: redis:7-alpine # Usa una imagen oficial de Redis (alpine es ligera)
+    container_name: my-redis-db # Nombre amigable para el contenedor
+    ports:
+      - "6379:6379" # Mapea el puerto de Redis (host:container)
+    volumes:
+      - redis_data:/data # Opcional: Persistencia de datos de Redis
+    restart: unless-stopped # Reinicia Redis automáticamente a menos que lo detengas manualmente
+
+  # Servicio para tu API Flask
   api:
     build: .
     ports:
       - "5000:5000"
     environment:
-      MYSQL_HOST: mysql
+      # MySQL environment variables (existing)
+      MYSQL_HOST: mysql # Conecta a la base de datos MySQL dentro de Docker Compose
       MYSQL_USER: ${MYSQL_USER}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
       MYSQL_DB: ${MYSQL_DATABASE}
+      # Mail environment variables (existing)
       MAIL_USER: ${MAIL_USER}
       MAIL_PASS: ${MAIL_PASS}
+      MAIL_SERVER: smtp.gmail.com # Asumiendo que usas Gmail SMTP
+      MAIL_PORT: 587 # Puerto estándar para STARTTLS
+      # Redis environment variables (NEW)
+      REDIS_HOST: redis # El nombre del servicio Redis dentro de la red de Docker Compose
+      REDIS_PORT: 6379
+      REDIS_DB: 0
     depends_on:
       - mysql
+      - redis # Asegura que el servicio 'redis' se inicie antes que 'api'
     volumes:
       - .:/app # Monta el directorio actual (donde está docker-compose.yml) en /app dentro del contenedor
+    restart: unless-stopped # Reinicia la API automáticamente a menos que la detengas manualmente
 
+  # Servicio para MySQL (existente)
   mysql:
     image: mysql:8.0
-    command: --default-authentication-plugin=mysql_native_password 
+    container_name: my-mysql-db # Nombre amigable para el contenedor
+    command: --default-authentication-plugin=mysql_native_password
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE}
       MYSQL_USER: ${MYSQL_USER}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
     ports:
-      - "3307:3306"
+      - "3307:3306" # Mapea el puerto de MySQL (host:container)
     volumes:
       - mysql_data:/var/lib/mysql # Volumen persistente para los datos de la base de datos
-      # ¡ATENCIÓN A ESTAS LÍNEAS!
-      # Monta el archivo flask.sql directamente desde la raíz del proyecto
-      - ./flask.sql:/docker-entrypoint-initdb.d/flask.sql
-      # Si también usas init_user.sh y está en mysql_init/, necesitas montarlo aparte:
-      - ./mysql_init/init_user.sh:/docker-entrypoint-initdb.d/init_user.sh
+      - ./flask.sql:/docker-entrypoint-initdb.d/flask.sql # Monta el archivo de inicialización SQL
+      - ./mysql_init/init_user.sh:/docker-entrypoint-initdb.d/init_user.sh # Monta el script de inicialización de usuario
+    restart: unless-stopped # Reinicia MySQL automáticamente a menos que lo detengas manualmente
 
+# Volúmenes para persistencia de datos
 volumes:
   mysql_data:
+  redis_data: # Define el volumen para los datos de Redis
