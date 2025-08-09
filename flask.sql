@@ -11,18 +11,17 @@ USE flask_api;
 -- y las columnas para restablecimiento de contraseña.
 CREATE TABLE IF NOT EXISTS users (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    token VARCHAR(64) NOT NULL UNIQUE,
     username VARCHAR(50) NOT NULL UNIQUE,
     email VARCHAR(100) NOT NULL UNIQUE,
     DescripUsuario VARCHAR(150),
     password_hash VARCHAR(255) NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     verificado BOOLEAN DEFAULT FALSE,
-    verificacion_codigo VARCHAR(6),
-    verificacion_expira DATETIME DEFAULT NULL,
+    verification_code VARCHAR(6),        -- Renamed for consistency with Python
+    code_expiration DATETIME DEFAULT NULL, -- Renamed for consistency with Python
     foto_perfil VARCHAR(255) DEFAULT NULL, -- Columna para la URL de la foto de perfil
-    reset_token VARCHAR(255) NULL,        -- Columna para el token/código de restablecimiento de contraseña
-    reset_token_expira DATETIME NULL      -- Columna para la expiración del token/código de restablecimiento
+    reset_token VARCHAR(255) NULL,         -- Columna para el token/código de restablecimiento de contraseña
+    reset_token_expira DATETIME NULL       -- Columna para la expiración del token/código de restablecimiento
 );
 
 -- Tabla de dificultades para las partidas (ej. Fácil, Intermedio, Difícil, Experto)
@@ -64,7 +63,9 @@ CREATE TABLE IF NOT EXISTS partidas (
 CREATE TABLE IF NOT EXISTS publicaciones (
     id INT AUTO_INCREMENT PRIMARY KEY,
     autor_id INT NOT NULL,
+    titulo VARCHAR(255) NOT NULL, -- Added titulo column
     texto TEXT NOT NULL,
+    imageUrl VARCHAR(255) DEFAULT NULL, -- Added imageUrl column for primary image
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     -- Clave foránea al usuario que creó la publicación
     FOREIGN KEY (autor_id) REFERENCES users(id) ON DELETE CASCADE
