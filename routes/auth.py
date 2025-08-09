@@ -164,7 +164,8 @@ def register():
         username = data.get('username')
         email = data.get('email')
         password = data.get('password')
-        descrip_usuario = data.get('DescripUsuario', '') # Asegúrate de que esto se pase si es necesario
+        # Asegúrate de que 'DescripUsuario' se pase, o usa un valor por defecto si no está presente.
+        descrip_usuario = data.get('DescripUsuario', '') 
 
         if not all([username, email, password]):
             return jsonify({"error": "Faltan datos requeridos (username, email, password)."}), 400
@@ -192,7 +193,9 @@ def register():
         verification_code = generar_codigo_verificacion()
         code_expiration = datetime.now() + timedelta(minutes=15) # Expira en 15 minutos
 
-        # Generar un token UUID único para el usuario (para uso como ID público, no JWT)
+        # Generar un token UUID único para el usuario.
+        # Esta columna 'token' puede ser usada para identificar públicamente al usuario
+        # sin exponer el ID de la base de datos, o para fines de seguimiento.
         new_user_uuid_token = generar_uuid_token()
 
         # Insertar el nuevo usuario con el token UUID generado

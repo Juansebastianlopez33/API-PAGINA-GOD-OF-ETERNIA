@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS users (
     code_expiration DATETIME DEFAULT NULL, -- Renamed for consistency with Python
     foto_perfil VARCHAR(255) DEFAULT NULL, -- Columna para la URL de la foto de perfil
     reset_token VARCHAR(255) NULL,         -- Columna para el token/código de restablecimiento de contraseña
-    reset_token_expira DATETIME NULL       -- Columna para la expiración del token/código de restablecimiento
+    reset_token_expira DATETIME NULL,      -- Columna para la expiración del token/código de restablecimiento
+    token VARCHAR(255) NULL                -- Added token column
 );
 
 -- Tabla de dificultades para las partidas (ej. Fácil, Intermedio, Difícil, Experto)
